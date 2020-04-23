@@ -77,7 +77,7 @@ var toExport = results.map(function(feat) {
 toExport = toExport.map(function(feat) {
   feat = ee.Feature(feat);
   var geo = feat.geometry().coordinates();
-  return feat.set({longitude: geo.get(1), latitude: geo.get(0)});
+  return feat.set({longitude: geo.get(0), latitude: geo.get(1)});
 });
 
 // Exporting results to google drive.
@@ -147,3 +147,4 @@ Map.addLayer(
 
 // Adding elevation data for exploration.
 Map.addLayer(usdem, null, 'elevation', false);
+
