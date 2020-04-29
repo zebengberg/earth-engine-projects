@@ -13,8 +13,9 @@ summit = ee.Geometry.Point(-110.869, 37.035)
 dem = dem.clip(rect)
 dem = dem.convolve(ee.Kernel.gaussian(5, 4))
 
-# An ee.List containing contour elevations to calculate.
-lines = ee.List.sequence(1800, 3150, 10)
+# An ee.List containing contour elevations to calculate. Get errors if the
+# elevations are too close to summit elevation.
+lines = ee.List.sequence(1800, 3100, 10)
 
 # An ee.List of masked ee.Images.
 contours = lines.map(lambda l: dem.gt(ee.Number(l)).selfMask().set({'ele': l}))
@@ -30,6 +31,7 @@ def convert_to_polygon(c):
     features = features.filterBounds(summit)
 
     # Features in now a singleton FeatureCollection; grabbing the only element.
+    # This can be a null object if contours are too close to summit elevation.
     feature = ee.Feature(features.first())
 
     # Keeping the elevation property and calculating area now rather than later.
@@ -84,7 +86,7 @@ def fractal_dimension(vertices):
     # because the data is skewed by the discrete dem pixels at this level. At
     # exponent 0 we experience a taxicab-like distance function.
     exponents = ee.List.sequence(1, exponent_bound)
-    scales = exponents.map(lambda exp: ee.Number(2).pow(ee.Number(exp)))
+    scales = exponents.map(lambda exp: ee.Number(2).pow(ee.Number(exp).round()))
     perimeters = scales.map(lambda scale: perimeter_at_scale(vertices, scale))
     log_perimeters = perimeters.map(lambda p: ee.Number(p).log())
 
