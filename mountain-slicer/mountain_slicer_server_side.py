@@ -1,27 +1,22 @@
-#!/usr/bin/env python
-"""Where operator example.
-Select the forest classes from the MODIS land cover image and intersect them
-with elevations above 1000m.
-"""
-
 import ee
-from time import sleep
-
 
 ee.Initialize()
 
+# Defining elevation data.
 dem = ee.Image('USGS/NED')
+# Coordinates of mountain summit and a rectangle enclosing containing mountain
+# contours under consideration.
 rect = ee.Geometry.Rectangle(-110.93, 36.98, -110.81, 37.08)
 summit = ee.Geometry.Point(-110.869, 37.035)
 
-# Clipping and smoothing elevation layer
+# Clipping and smoothing elevation layer.
 dem = dem.clip(rect)
 dem = dem.convolve(ee.Kernel.gaussian(5, 4))
 
 # An ee.List containing contour elevations to calculate.
-lines = ee.List.sequence(2000, 3100, 100)
+lines = ee.List.sequence(1800, 3150, 10)
 
-# An ee.List of masked ee.Image.
+# An ee.List of masked ee.Images.
 contours = lines.map(lambda l: dem.gt(ee.Number(l)).selfMask().set({'ele': l}))
 
 
@@ -30,84 +25,107 @@ def convert_to_polygon(c):
     c = ee.Image(c).toInt()
     ele = c.get('ele')
     features = c.reduceToVectors(scale=10)
-    # Only keeping contour line containing the summit
+
+    # Only keeping contour line containing the summit.
     features = features.filterBounds(summit)
+
     # Features in now a singleton FeatureCollection; grabbing the only element.
     feature = ee.Feature(features.first())
-    feature = feature.set({'elevation': ele, 'area': feature.area(1).toInt()})
+
+    # Keeping the elevation property and calculating area now rather than later.
+    feature = feature.set({'elevation': ele, 'area': feature.area(1)})
     return feature.select(['elevation', 'area'])
 
 
 # Converting contours to a vector object. After calling ee.reduceToVectors(),
 # each contour is either a Polygon or MultiPolygon object. For MultiPolygon
-# objects, we only keep the polygon containing the origin.
+# objects, we only keep the polygon containing the summit.
 contours_as_polygons = contours.map(convert_to_polygon)
 
 
-def perimeter_at_scale(vertices, step_size):
+def perimeter_at_scale(vertices, scale):
     """Calculate the average perimeter of the sub-polygons obtained by sampling
-     vertices at specified steps."""
+     vertices at specified scale."""
 
-    shifts = ee.List.sequence(0, step_size - 1)
+    # A scale of 10 indicates that we look at  the sub-polygon obtained by
+    # keeping every 10th vertex of the original polygon. By changing the
+    # starting point, there are 10 such polygons. We consider all 10, and
+    # average their perimeters.
+    scale = ee.Number(scale)
+    shifts = ee.List.sequence(0, scale.subtract(1))
 
     def get_perimeter(start):
+        """A callback function that calculates the perimeter of a sub-poly."""
         end = vertices.length().subtract(1)
-        sub_vertices = ee.List.sequence(start, end, step_size)
+        sub_vertices = ee.List.sequence(start, end, scale)
         sub_vertices = sub_vertices.map(lambda n: vertices.get(n))
         poly = ee.Geometry.Polygon(sub_vertices)
         return poly.perimeter()
 
     perimeters = shifts.map(get_perimeter)
+
     # Returning the average.
-    return ee.Number(perimeters.reduce(ee.Reducer.sum())).divide(step_size)
+    return ee.Number(perimeters.reduce(ee.Reducer.sum())).divide(scale)
 
 
-poly = ee.FeatureCollection(contours_as_polygons.get(5));
-poly = ee.Feature(poly)
-vertices = ee.List(poly.geometry().coordinates().get(0))
-print(perimeter_at_scale(vertices, 700).getInfo())
+def fractal_dimension(vertices):
+    """Calculate the fractal dimension of a polygon by taking a linear
+     regression of perimeters at different scaling levels."""
+
+    # Need each list of sub-vertices to have at least three vertices. This gives
+    # the inequality length > 3 * stepSize. Now take log base 2 of both sides to
+    # get the upper bound on the exponent.
+    exponent_bound = vertices.length().log().divide(ee.Number(2).log()) \
+        .subtract(ee.Number(3).log().divide(ee.Number(2).log())) \
+        .toInt()
+
+    # We start with exponent at 1, which means the perimeter at the most zoomed
+    # in resolution will only include every other vertex. We ignore exponent 0
+    # because the data is skewed by the discrete dem pixels at this level. At
+    # exponent 0 we experience a taxicab-like distance function.
+    exponents = ee.List.sequence(1, exponent_bound)
+    scales = exponents.map(lambda exp: ee.Number(2).pow(ee.Number(exp)))
+    perimeters = scales.map(lambda scale: perimeter_at_scale(vertices, scale))
+    log_perimeters = perimeters.map(lambda p: ee.Number(p).log())
+
+    # Fitting a linear model to the log-log data.
+    exponents = exponents.reverse()
+    inputs = exponents.zip(log_perimeters)
+    slope = ee.Dictionary(inputs.reduce(ee.Reducer.linearFit())).get('scale')
+
+    # Returning 1 + slope, which is a measure of fractal dimension.
+    return ee.Number(slope).add(ee.Number(1))
 
 
-def get_stats(p):
-    """Get area and perimeter of polygon p."""
-    p = ee.Feature(p)
-    return ee.Feature(None,
-                      {'elevation': p.get('elevation'),
-                       'perimeter': p.perimeter(1).toInt(),  # error threshold
-                       'area': p.area(1).toInt()
-                       })
+def get_stats(poly):
+    """Get area, perimeter, and fractal dimension of polygon."""
+    poly = ee.Feature(poly)
+    vertices = ee.List(poly.geometry().coordinates().get(0))
+
+    # Calculating perimeter at second-most zoomed-in level to avoid pixel
+    # noise. See comment within fractal_dimension definition.
+    perimeter = perimeter_at_scale(vertices, 2)
+
+    stats_dict = {'elevation': ee.Number(poly.get('elevation')).toInt(),
+                  'area': ee.Number(poly.get('area')).toInt(),
+                  'perimeter': perimeter.toInt(),
+                  'fractal_dim': fractal_dimension(vertices)}
+
+    # Ignoring geometry for export.
+    return ee.Feature(None, stats_dict)
 
 
 # Aggregating some interesting statistics into a FeatureCollection in order to
 # use ee.Export.
-# table = ee.FeatureCollection(contour_polygons.map(get_stats))
-#
-#
-# task = ee.batch.Export.table.toDrive(collection=table,
-#                                      description='contour data',
-#                                      folder='earth-engine',
-#                                      fileNamePrefix='navajo',
-#                                      fileFormat='CSV')
-#
-# task.start()
-# print(task.status())
-# print(task.id)
+table = ee.FeatureCollection(contours_as_polygons.map(get_stats))
+
+# Exporting to google drive.
+task = ee.batch.Export.table.toDrive(collection=table,
+                                     description='contour data',
+                                     folder='earth-engine',
+                                     fileNamePrefix='navajo',
+                                     fileFormat='CSV')
+
+task.start()
+print('Current status:', task.status())
 # Use ee.batch.Task.list() to see current status of exports.
-
-
-
-#import pandas as pd
-#import matplotlib.pyplot as plt
-# data = {'elevation': lines.getInfo(),
-#         'area': areas.getInfo(),
-#         'perimeter': perimeters.getInfo()}
-#
-#
-# data = pd.DataFrame.from_dict(data)
-#
-# data.plot(x='elevation', y='perimeter', kind='scatter')
-# plt.show()
-#
-# # TODO: Perhaps use ee.Export rather than getInfo()
-# # getInfo() runs into server side issues with too many calls
-# # Export may avoid these.
