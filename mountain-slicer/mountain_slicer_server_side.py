@@ -34,9 +34,9 @@ def convert_to_polygon(c):
     # This can be a null object if contours are too close to summit elevation.
     feature = ee.Feature(features.first())
 
-    # Keeping the elevation property and calculating area now rather than later.
-    feature = feature.set({'elevation': ele, 'area': feature.area(1)})
-    return feature.select(['elevation', 'area'])
+    # Keeping the elevation property.
+    feature = feature.set({'elevation': ele})
+    return feature.select(['elevation'])
 
 
 # Converting contours to a vector object. After calling ee.reduceToVectors(),
@@ -86,7 +86,7 @@ def fractal_dimension(vertices):
     # because the data is skewed by the discrete dem pixels at this level. At
     # exponent 0 we experience a taxicab-like distance function.
     exponents = ee.List.sequence(1, exponent_bound)
-    scales = exponents.map(lambda exp: ee.Number(2).pow(ee.Number(exp).round()))
+    scales = exponents.map(lambda exp: ee.Number(2).pow(ee.Number(exp)))
     perimeters = scales.map(lambda scale: perimeter_at_scale(vertices, scale))
     log_perimeters = perimeters.map(lambda p: ee.Number(p).log())
 
@@ -101,15 +101,27 @@ def fractal_dimension(vertices):
 
 def get_stats(poly):
     """Get area, perimeter, and fractal dimension of polygon."""
+
     poly = ee.Feature(poly)
-    vertices = ee.List(poly.geometry().coordinates().get(0))
+    # Sometimes poly is actually a MultiPolygon geometry. In this case, we just
+    # take the first polygon within it.
+    vertices = ee.Algorithms.If(
+        poly.geometry().type().compareTo(ee.String('MultiPolygon')),
+        poly.geometry().coordinates().get(0),
+        ee.List(poly.geometry().coordinates().get(0)).get(0)
+    )
+    vertices = ee.List(vertices)
 
     # Calculating perimeter at second-most zoomed-in level to avoid pixel
     # noise. See comment within fractal_dimension definition.
     perimeter = perimeter_at_scale(vertices, 2)
 
+    # Calculating area here rather than at Feature level. This ensures
+    # consistency in case that poly was MultiPolygon.
+    area = ee.Geometry.Polygon(vertices).area()
+
     stats_dict = {'elevation': ee.Number(poly.get('elevation')).toInt(),
-                  'area': ee.Number(poly.get('area')).toInt(),
+                  'area': area.toInt(),
                   'perimeter': perimeter.toInt(),
                   'fractal_dim': fractal_dimension(vertices)}
 
