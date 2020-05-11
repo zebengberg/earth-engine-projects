@@ -128,8 +128,8 @@ def set_landsat_data(feature):
 
 
 # Building an ee.List of rectangles objects.
-x0, x1, dx = -125, -102, 0.3
-y0, y1, dy = 31, 49, 0.3
+x0, x1, dx = -125, -102, 0.25
+y0, y1, dy = 31, 49, 0.25
 
 rectangles = [ee.Geometry.Rectangle(x, y, x + dx, y + dy)
               for x in np.arange(x0, x1, dx) for y in np.arange(y0, y1, dx)]
