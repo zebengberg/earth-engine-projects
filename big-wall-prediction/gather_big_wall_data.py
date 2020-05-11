@@ -9,7 +9,7 @@ ee.Initialize()
 # avoids error (Too many pixels in region) in calling reduceToVector method.
 
 STEEP_THRESHOLD = 70
-HEIGHT_THRESHOLD = 50
+HEIGHT_THRESHOLD = 100
 
 # Importing datasets
 dem = ee.Image('USGS/NED')
@@ -52,7 +52,7 @@ def get_cliffs(rectangle):
     reducer='countEvery',
     geometry=rectangle,
     scale=10,
-    geometryType='polygon'  # good choices are 'centroid' and 'polygon'
+    geometryType='polygon'
   )
   # Renaming properties
   features = features.select(['label', 'count'], ['height', 'count'])
@@ -60,32 +60,40 @@ def get_cliffs(rectangle):
     ee.Number(f.get('height')).divide(f.get('count'))))
   features = features.select(['height', 'ratio_height_to_area'])
 
-  # Getting data for each cliff geometry.
+  # Getting data for each polygonal cliff geometry.
+  features = features.map(lambda f: set_landsat_data(f))
+
+  # Now reducing cliff polygon to its centroid and getting more data.
+  features = features.map(lambda f: f.centroid(10 ** -2))
+  features = features.map(lambda f: f.set(
+    'latitude', f.geometry().coordinates().get(1),
+    'longitude', f.geometry().coordinates().get(0)))
+  # Need lithology to be unmasked to avoid critical errors.
+  features = features.map(lambda f: \
+    f.set('centroid_lith', lith.reduceRegion('first', f.geometry()).get('b1')))
+  features = features.filter(ee.Filter.notNull(['centroid_lith']))
+  features = features.map(lambda f: set_lithology(f))
   features = features.map(lambda f: set_population(f))
   features = features.map(lambda f: set_road_within_distance(f, 100))
   features = features.map(lambda f: set_road_within_distance(f, 300))
   features = features.map(lambda f: set_road_within_distance(f, 1000))
   features = features.map(lambda f: set_road_within_distance(f, 3000))
-  features = features.map(lambda f: set_lithology(f))
-  features = features.map(lambda f: set_landsat_data(f))
-
-  # Changing geometry from polygon to centroid -- easier to read in spreadsheet
-  features = features.map(lambda f: f.centroid(10 ** -2))
-  features = features.map(lambda f: f.set(
-    'latitude', f.geometry().coordinates().get(1),
-    'longitude', f.geometry().coordinates().get(0)))
 
   # Here features is a FeatureCollection object. Casting it to a list.
   return features.toList(1000)  # maximum number of features per rectangle
 
 
 def set_population(feature):
-  """Add count of population within 50km of feature as a feature property."""
+  """Add count of population within distance of feature as a feature property."""
   geo = feature.geometry()
-  disk = geo.buffer(50000)
+  disk = geo.buffer(100000)
   count = pop.reduceRegion(reducer='sum', geometry=disk)
   count = ee.Number(count.get('population_count')).toInt()
-  return feature.set('population', count)
+  feature = feature.set('population_within_100km', count)
+  disk = geo.buffer(30000)
+  count = pop.reduceRegion(reducer='sum', geometry=disk)
+  count = ee.Number(count.get('population_count')).toInt()
+  return feature.set('population_within_30km', count)
 
 
 def set_road_within_distance(feature, distance):
@@ -94,24 +102,24 @@ def set_road_within_distance(feature, distance):
   disk = geo.buffer(distance)
   close_roads = roads.filterBounds(disk)
   is_close_road = close_roads.size().gt(0)
-  return feature.set('road_within_' + str(distance), is_close_road)
+  return feature.set('road_within_' + str(distance) + 'm', is_close_road)
 
 
 def set_lithology(feature):
   """Add lithology data for disk around cliff as a feature property."""
-  geo = feature.geometry().centroid(10 ** -2)
+  geo = feature.geometry()
   disk = geo.buffer(1000)
   hist = lith.reduceRegion(reducer='frequencyHistogram', geometry=disk).get('b1')
   hist = ee.Dictionary(hist)
   hist_sum = hist.toArray().reduce(reducer='sum', axes=[0]).get([0])
   # Categories that might be relevant to rock
   lith_dict = {
-    'carbonate': ee.Number(hist.get('1', 0)).divide(hist_sum),
-    'non_carbonate': ee.Number(hist.get('3', 0)).divide(hist_sum),
-    'silicic_residual': ee.Number(hist.get('5', 0)).divide(hist_sum),
-    'colluvial_sediment': ee.Number(hist.get('8', 0)).divide(hist_sum),
-    'glacial_till_coarse': ee.Number(hist.get('11', 0)).divide(hist_sum),
-    'alluvium': ee.Number(hist.get('19', 0)).divide(hist_sum),
+    'geology_carbonate': ee.Number(hist.get('1', 0)).divide(hist_sum),
+    'geology_non_carbonate': ee.Number(hist.get('3', 0)).divide(hist_sum),
+    'geology_silicic_residual': ee.Number(hist.get('5', 0)).divide(hist_sum),
+    'geology_colluvial_sediment': ee.Number(hist.get('8', 0)).divide(hist_sum),
+    'geology_glacial_till_coarse': ee.Number(hist.get('11', 0)).divide(hist_sum),
+    'geology_alluvium': ee.Number(hist.get('19', 0)).divide(hist_sum),
   }
   return feature.set(lith_dict)
   
@@ -148,13 +156,15 @@ results = results.flatten()
 
 # Exporting results to google drive.
 results = ee.FeatureCollection(results)  #casting from ee.List
+description = 'steepness_{}_height_{}m'.format(STEEP_THRESHOLD, HEIGHT_THRESHOLD)
 task = ee.batch.Export.table.toDrive(
   collection=results,
-  description='big wall data',
+  description='getting big wall data: ' + description,
   fileFormat='CSV',
   folder='earth-engine',
-  fileNamePrefix='big_wall_data',
+  fileNamePrefix='big_wall_data_' + description,
 )
+
 
 task.start()
 print('Current status:', task.status())
