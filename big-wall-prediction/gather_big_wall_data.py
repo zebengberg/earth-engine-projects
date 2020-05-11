@@ -1,12 +1,12 @@
+"""Split up the western US into small rectangles. Each rectangle is searched for
+big walls. For each big wall found, data is collected. Results are exported to
+google drive. Use small rectangle to split bigger region into batches; this
+avoids error (Too many pixels in region) in calling reduceToVector method.
+"""
+
 import ee
 import numpy as np
-
 ee.Initialize()
-
-# Split up the western US into small rectangles. Each rectangle is searched for
-# big walls. For each big wall found, data is collected. Results are exported
-# to google drive. Use small rectangle to split bigger region into batches; this
-# avoids error (Too many pixels in region) in calling reduceToVector method.
 
 STEEP_THRESHOLD = 70
 HEIGHT_THRESHOLD = 100
@@ -23,7 +23,7 @@ lith = ee.Image('CSP/ERGo/1_0/US/lithology')
 
 landsat = ee.ImageCollection("LANDSAT/LC08/C01/T1")
 landsat = landsat.filterDate('2017-01-01', '2019-12-31')
-# Get rid of clouds
+# Getting rid of clouds
 landsat = ee.Algorithms.Landsat.simpleComposite(collection=landsat, asFloat=True)
 # Getting bands that might be useful in geology
 landsat = landsat.select('B7', 'B6', 'B2', 'B4', 'B5')
@@ -32,7 +32,7 @@ usa = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
 usa = usa.filter(ee.Filter.eq('country_co', 'US'))
 
 
-# Build up elevation layers.
+# Building up elevation layers.
 steep = ee.Terrain.slope(dem).gt(STEEP_THRESHOLD)
 dem_masked = dem.updateMask(steep)
 # The image steep has two bands: the first is 0 or 1, second is the elevation
@@ -54,7 +54,7 @@ def get_cliffs(rectangle):
     scale=10,
     geometryType='polygon'
   )
-  # Renaming properties
+  # Renaming elevation properties.
   features = features.select(['label', 'count'], ['height', 'count'])
   features = features.map(lambda f: f.set('ratio_height_to_area',
     ee.Number(f.get('height')).divide(f.get('count'))))
@@ -84,7 +84,7 @@ def get_cliffs(rectangle):
 
 
 def set_population(feature):
-  """Add count of population within distance of feature as a feature property."""
+  """Add population as a feature property."""
   geo = feature.geometry()
   disk = geo.buffer(100000)
   count = pop.reduceRegion(reducer='sum', geometry=disk)
@@ -106,13 +106,13 @@ def set_road_within_distance(feature, distance):
 
 
 def set_lithology(feature):
-  """Add lithology data for disk around cliff as a feature property."""
+  """Add lithology data for 1km disk around cliff as a feature property."""
   geo = feature.geometry()
   disk = geo.buffer(1000)
   hist = lith.reduceRegion(reducer='frequencyHistogram', geometry=disk).get('b1')
   hist = ee.Dictionary(hist)
   hist_sum = hist.toArray().reduce(reducer='sum', axes=[0]).get([0])
-  # Categories that might be relevant to rock
+  # Lithology categories that might be relevant to rocky terrain.
   lith_dict = {
     'geology_carbonate': ee.Number(hist.get('1', 0)).divide(hist_sum),
     'geology_non_carbonate': ee.Number(hist.get('3', 0)).divide(hist_sum),
@@ -150,7 +150,7 @@ rectangles = rectangles.filterBounds(usa)
 rectangles = rectangles.toList(200000)
 rectangles = rectangles.map(lambda f: ee.Feature(f).geometry())
 
-# Running the main job
+# Running the main job.
 results = rectangles.map(get_cliffs, True)  # dropping nulls
 results = results.flatten()
 
