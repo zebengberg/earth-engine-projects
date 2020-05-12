@@ -9,7 +9,7 @@ import numpy as np
 ee.Initialize()
 
 STEEP_THRESHOLD = 70
-HEIGHT_THRESHOLD = 100
+HEIGHT_THRESHOLD = 80
 
 # Importing datasets
 dem = ee.Image('USGS/NED')
@@ -18,6 +18,8 @@ roads = ee.FeatureCollection('TIGER/2016/Roads')
 
 pop = ee.ImageCollection('CIESIN/GPWv411/GPW_Population_Count')
 pop = pop.first().select('population_count')
+
+mp = ee.FeatureCollection('users/zebengberg/mp_data')
 
 lith = ee.Image('CSP/ERGo/1_0/US/lithology')
 
@@ -55,10 +57,7 @@ def get_cliffs(rectangle):
     geometryType='polygon'
   )
   # Renaming elevation properties.
-  features = features.select(['label', 'count'], ['height', 'count'])
-  features = features.map(lambda f: f.set('ratio_height_to_area',
-    ee.Number(f.get('height')).divide(f.get('count'))))
-  features = features.select(['height', 'ratio_height_to_area'])
+  features = features.select(['label', 'count'], ['height', 'pixel_count'])
 
   # Getting data for each polygonal cliff geometry.
   features = features.map(lambda f: set_landsat_data(f))
@@ -74,10 +73,12 @@ def get_cliffs(rectangle):
   features = features.filter(ee.Filter.notNull(['centroid_lith']))
   features = features.map(lambda f: set_lithology(f))
   features = features.map(lambda f: set_population(f))
-  features = features.map(lambda f: set_road_within_distance(f, 100))
-  features = features.map(lambda f: set_road_within_distance(f, 300))
   features = features.map(lambda f: set_road_within_distance(f, 1000))
+  features = features.map(lambda f: set_road_within_distance(f, 2000))
   features = features.map(lambda f: set_road_within_distance(f, 3000))
+  features = features.map(lambda f: set_road_within_distance(f, 4000))
+  features = features.map(lambda f: set_road_within_distance(f, 5000))
+  features = features.map(lambda f: set_mp_score(f))
 
   # Here features is a FeatureCollection object. Casting it to a list.
   return features.toList(1000)  # maximum number of features per rectangle
@@ -103,6 +104,17 @@ def set_road_within_distance(feature, distance):
   close_roads = roads.filterBounds(disk)
   is_close_road = close_roads.size().gt(0)
   return feature.set('road_within_' + str(distance) + 'm', is_close_road)
+
+
+def set_mp_score(feature):
+  """Use mountain project data to give score based on routes and views."""
+  geo = feature.geometry()
+  disk = geo.buffer(1500)  # looking at mp data within 1.5km of feature
+  close_mp = mp.filterBounds(disk)
+  num_rock_routes = close_mp.aggregate_sum('num_rock_routes')
+  num_views = close_mp.aggregate_sum('num_views')
+  score = num_rock_routes.multiply(2000).add(num_views)
+  return feature.set('mp_score', score)
 
 
 def set_lithology(feature):
